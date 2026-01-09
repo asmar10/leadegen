@@ -1,13 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Download, RefreshCw } from 'lucide-react';
 import { Button, Spinner } from '@/components/atoms';
 import { StatusBadge } from '@/components/molecules';
 import { LeadsTable, LeadDetail } from '@/components/organisms';
-import { useSearch, useSearchResults, useRetrySearch } from '@/hooks';
-import { useRescrapeStore } from '@/hooks';
+import { useSearch, useSearchResults, useRetrySearch, useRescrapeStore, useToast, useWebSocket } from '@/hooks';
 import { exportToCSV, exportToJSON } from '@/lib/export';
 import type { Store } from '@/types';
 
@@ -15,32 +14,67 @@ export default function SearchResultPage() {
   const params = useParams();
   const router = useRouter();
   const searchId = Number(params.id);
+  const toast = useToast();
 
-  const { data: search, isLoading: isLoadingSearch } = useSearch(searchId);
-  const { data: searchResults, isLoading: isLoadingResults } = useSearchResults(searchId);
+  const { data: search, isLoading: isLoadingSearch, refetch: refetchSearch } = useSearch(searchId);
+  const { data: searchResults, isLoading: isLoadingResults, refetch: refetchResults } = useSearchResults(searchId);
   const retrySearch = useRetrySearch();
   const rescrapeStore = useRescrapeStore();
 
   const [selectedStore, setSelectedStore] = useState<Store | null>(null);
 
+  // WebSocket for real-time updates
+  const { isConnected } = useWebSocket({
+    searchId,
+    onMessage: (message) => {
+      if (message.type === 'search_update') {
+        refetchSearch();
+        if (message.status === 'COMPLETED') {
+          refetchResults();
+          toast.success('Search completed', `Found ${message.stores_found} stores`);
+        } else if (message.status === 'FAILED') {
+          toast.error('Search failed', message.error || 'An error occurred');
+        }
+      } else if (message.type === 'store_found') {
+        // Could add store to list optimistically
+        refetchResults();
+      }
+    },
+    onConnect: () => {
+      console.log('WebSocket connected');
+    },
+  });
+
   const handleExportCSV = () => {
     if (searchResults?.stores) {
       exportToCSV(searchResults.stores, `leads-${search?.niche || 'search'}-${searchId}`);
+      toast.success('Export complete', 'CSV file downloaded');
     }
   };
 
   const handleExportJSON = () => {
     if (searchResults?.stores) {
       exportToJSON(searchResults.stores, `leads-${search?.niche || 'search'}-${searchId}`);
+      toast.success('Export complete', 'JSON file downloaded');
     }
   };
 
-  const handleRetry = () => {
-    retrySearch.mutate(searchId);
+  const handleRetry = async () => {
+    try {
+      await retrySearch.mutateAsync(searchId);
+      toast.info('Search restarted', 'The search has been queued for retry');
+    } catch (error) {
+      toast.error('Retry failed', 'Could not restart the search');
+    }
   };
 
-  const handleRescrape = (storeId: number) => {
-    rescrapeStore.mutate({ id: storeId, scrapeSocial: true });
+  const handleRescrape = async (storeId: number) => {
+    try {
+      await rescrapeStore.mutateAsync({ id: storeId, scrapeSocial: true });
+      toast.success('Refresh queued', 'Store data will be updated shortly');
+    } catch (error) {
+      toast.error('Refresh failed', 'Could not refresh store data');
+    }
   };
 
   if (isLoadingSearch) {
@@ -79,6 +113,12 @@ export default function SearchResultPage() {
                 {search.niche || search.query}
               </h1>
               <StatusBadge status={search.status} />
+              {isRunning && isConnected && (
+                <span className="flex items-center gap-1.5 text-xs text-green-600">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  Live
+                </span>
+              )}
             </div>
             {search.location && (
               <p className="text-gray-500">{search.location}</p>

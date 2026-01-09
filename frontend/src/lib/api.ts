@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 import type {
   Store,
   StoreListResponse,
@@ -12,12 +12,87 @@ import type {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
+// Retry configuration
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10000,
+  retryableStatuses: [408, 429, 500, 502, 503, 504],
+};
+
+// Calculate delay with exponential backoff and jitter
+function getRetryDelay(attempt: number): number {
+  const exponentialDelay = RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt);
+  const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
+  return Math.min(exponentialDelay + jitter, RETRY_CONFIG.maxDelayMs);
+}
+
+// Sleep helper
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Check if error is retryable
+function isRetryableError(error: AxiosError): boolean {
+  if (!error.response) {
+    // Network errors are retryable
+    return true;
+  }
+  return RETRY_CONFIG.retryableStatuses.includes(error.response.status);
+}
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 30000,
 });
+
+// Request interceptor for logging
+api.interceptors.request.use(
+  (config) => {
+    // Add retry count to config if not present
+    if (config.headers && !config.headers['x-retry-count']) {
+      config.headers['x-retry-count'] = '0';
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Response interceptor for retry logic
+api.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const config = error.config as AxiosRequestConfig & { headers: Record<string, string> };
+
+    if (!config) {
+      return Promise.reject(error);
+    }
+
+    const retryCount = parseInt(config.headers?.['x-retry-count'] || '0', 10);
+
+    if (retryCount >= RETRY_CONFIG.maxRetries || !isRetryableError(error)) {
+      return Promise.reject(error);
+    }
+
+    // Calculate delay for this retry attempt
+    const delay = getRetryDelay(retryCount);
+
+    console.log(
+      `Request failed with ${error.response?.status || 'network error'}. ` +
+      `Retrying in ${Math.round(delay)}ms (attempt ${retryCount + 1}/${RETRY_CONFIG.maxRetries})`
+    );
+
+    // Wait before retrying
+    await sleep(delay);
+
+    // Increment retry count
+    config.headers['x-retry-count'] = String(retryCount + 1);
+
+    // Retry the request
+    return api.request(config);
+  }
+);
 
 // Stores API
 export const storesApi = {

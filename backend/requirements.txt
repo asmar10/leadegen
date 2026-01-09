@@ -11,6 +11,7 @@ alembic==1.13.1
 # Task queue
 celery[redis]==5.3.6
 redis==5.0.1
+flower==2.0.1
 
 # Scraping
 playwright==1.41.0
