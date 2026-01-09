@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import get_search_service
 from app.services.search_service import SearchService
@@ -8,6 +8,7 @@ from app.schemas.search import (
     SearchJobWithResults,
     SearchJobListResponse,
 )
+from app.tasks.search_tasks import run_search_task
 
 router = APIRouter(prefix="/searches", tags=["searches"])
 
@@ -58,16 +59,45 @@ def get_search_results(
 @router.post("", response_model=SearchJobResponse, status_code=201)
 def create_search(
     search_data: SearchJobCreate,
-    background_tasks: BackgroundTasks,
     search_service: SearchService = Depends(get_search_service),
 ):
-    """Create a new search job."""
+    """
+    Create a new search job.
+
+    The search will be queued and executed asynchronously.
+    Poll the search status endpoint to check progress.
+    """
     search = search_service.create_search(search_data)
 
-    # Queue the search task (will be handled by Celery in Phase 2)
-    # background_tasks.add_task(run_search_task, search.id)
+    # Queue the Celery task
+    run_search_task.delay(search.id)
 
     return search
+
+
+@router.post("/{search_id}/retry", response_model=SearchJobResponse)
+def retry_search(
+    search_id: int,
+    search_service: SearchService = Depends(get_search_service),
+):
+    """Retry a failed search job."""
+    from app.models.search import SearchStatus
+
+    search = search_service.get_search(search_id)
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    if search.status not in (SearchStatus.FAILED, SearchStatus.COMPLETED):
+        raise HTTPException(
+            status_code=400,
+            detail="Can only retry failed or completed searches"
+        )
+
+    # Reset status and re-queue
+    search_service.update_search_status(search_id, SearchStatus.PENDING)
+    run_search_task.delay(search_id)
+
+    return search_service.get_search(search_id)
 
 
 @router.delete("/{search_id}", status_code=204)

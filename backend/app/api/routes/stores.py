@@ -9,6 +9,7 @@ from app.schemas.store import (
     StoreResponse,
     StoreListResponse,
 )
+from app.tasks.search_tasks import scrape_store_details
 
 router = APIRouter(prefix="/stores", tags=["stores"])
 
@@ -81,6 +82,27 @@ def update_store(
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
     return store
+
+
+@router.post("/{store_id}/rescrape")
+def rescrape_store(
+    store_id: int,
+    scrape_social: bool = Query(False, description="Also scrape social media profiles"),
+    store_service: StoreService = Depends(get_store_service),
+):
+    """
+    Queue a rescrape of the store to update its data.
+
+    Optionally scrape social media profiles for additional data.
+    """
+    store = store_service.get_store(store_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Queue the scrape task
+    scrape_store_details.delay(store_id, scrape_social=scrape_social)
+
+    return {"message": "Rescrape queued", "store_id": store_id}
 
 
 @router.delete("/{store_id}", status_code=204)

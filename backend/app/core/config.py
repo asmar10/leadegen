@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,13 @@ class Settings(BaseSettings):
     scrape_delay_min: float = 1.0
     scrape_delay_max: float = 3.0
     max_concurrent_scrapes: int = 5
+    max_results_per_search: int = 50
+
+    # SerpAPI (optional - for more reliable Google searches)
+    serpapi_key: Optional[str] = None
+
+    # Proxy settings (optional - comma-separated list)
+    proxy_list: Optional[str] = None
 
     # API settings
     api_prefix: str = "/api/v1"
